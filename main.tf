@@ -1,6 +1,16 @@
 provider "aws" {
   region = "ap-south-1"
 }
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 4.37.0"
+    }
+  }
+
+  required_version = ">= 1.3.0"
+}
 
 resource "aws_vpc" "devopsshack_vpc" {
   cidr_block = "10.0.0.0/16"
@@ -89,6 +99,7 @@ resource "aws_security_group" "devopsshack_node_sg" {
 resource "aws_eks_cluster" "devopsshack" {
   name     = "devopsshack-cluster"
   role_arn = aws_iam_role.devopsshack_cluster_role.arn
+  version  = "1.28"
 
   vpc_config {
     subnet_ids         = aws_subnet.devopsshack_subnet[*].id
@@ -101,6 +112,7 @@ resource "aws_eks_node_group" "devopsshack" {
   node_group_name = "devopsshack-node-group"
   node_role_arn   = aws_iam_role.devopsshack_node_group_role.arn
   subnet_ids      = aws_subnet.devopsshack_subnet[*].id
+  version         = "1.28"
 
   scaling_config {
     desired_size = 3
