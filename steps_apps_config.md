@@ -1,281 +1,140 @@
-Perfect — you're starting clean with Terraform for EKS setup. Based on your Terraform code and goals (EKS with EBS volumes and ALB Ingress for NGINX), I’ll now give you a **complete and step-by-step guide**:
+Excellent question — you're now thinking like a real DevOps engineer. Let’s break this down clearly with **real-world practices** from companies using **AWS EKS, Terraform, Helm, and ArgoCD**.
 
 ---
 
-## ✅ Step-by-Step: Full EKS + EBS + ALB Setup
+## 🔧 How Real Companies Structure DevOps Deployments
+
+### 🧱 1. **Infrastructure Setup – via Terraform**
+
+Handled by: **DevOps / Platform team**
+
+Provisioned using `terraform`:
+
+* VPCs, Subnets, NAT Gateway, etc.
+* EKS Cluster (`aws_eks_cluster`)
+* Node groups (`aws_eks_node_group`)
+* IAM Roles & Policies
+* EBS CSI IAM Role (for dynamic storage)
+* IRSA (IAM roles for service accounts)
+* ArgoCD itself (optionally)
+* Security Groups, Route tables, etc.
+
+➡️ These are mostly **static cloud resources**.
 
 ---
 
-### 🧱 1. Terraform EKS Infrastructure (✅ You Already Have It)
+### 📦 2. **Cluster Addons – via Terraform Helm provider or ArgoCD**
 
-Your code provisions:
+**Common tools installed (via Helm):**
 
-* VPC, 2 Subnets (public), Route Table
-* Security Groups
-* IAM Roles for Control Plane and Nodes
-* EKS Cluster and Managed Node Group (v1.28)
+* AWS Load Balancer Controller
+* EBS CSI Driver
+* Secrets Store CSI Driver
+* Metrics Server
+* External DNS
+* CoreDNS tweaks
 
-**Double-check**:
+#### Option A – DevOps uses Terraform Helm provider:
 
-* `var.ssh_key_name` must be defined.
-* You’re using **public subnets**, good for ALB.
-
-Apply it:
-
-```bash
-terraform init
-terraform apply -auto-approve
+```hcl
+resource "helm_release" "aws_lb_controller" {
+  name       = "aws-load-balancer-controller"
+  repository = "https://aws.github.io/eks-charts"
+  chart      = "aws-load-balancer-controller"
+  namespace  = "kube-system"
+  values     = [file("values.yaml")]
+}
 ```
+
+#### Option B – Teams use ArgoCD:
+
+ArgoCD points to Helm charts stored in Git (either remote or internal repo).
+
+✅ This is preferred **if you want GitOps model for all cluster add-ons too.**
+
+> 🧠 Note: IAM roles still must be created **before** Helm or ArgoCD install, because they bind via IRSA.
 
 ---
 
-### 🔍 2. Update `kubeconfig`
+### 🚀 3. **Application Workloads – via ArgoCD (GitOps)**
 
-Once EKS is created:
+* Developers or Platform team write Helm charts or Kustomize
+* Pushed to Git
+* ArgoCD syncs the workload to the EKS cluster
 
-```bash
-aws eks update-kubeconfig \
-  --name devopsshack-cluster \
-  --region ap-south-1
-```
+Includes:
 
-Test it:
+* Your web services
+* APIs, Java services, Node apps
+* Secrets from Secrets Manager
+* Env vars, config maps
+* HPAs, Ingress, Network policies
 
-```bash
-kubectl get nodes
-```
-
----
-
-## 🪛 3. Install EBS CSI Driver (for Persistent Storage)
-
-### 1️⃣ Create IAM role for EBS CSI driver:
-
-```bash
-eksctl create iamserviceaccount \
-  --name ebs-csi-controller-sa \
-  --namespace kube-system \
-  --cluster devopsshack-cluster \
-  --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy \
-  --approve \
-  --role-name AmazonEKS_EBS_CSI_DriverRole
-```
-
-### 2️⃣ Install driver as EKS addon:
-
-```bash
-eksctl create addon \
-  --name aws-ebs-csi-driver \
-  --cluster devopsshack-cluster \
-  --service-account-role-arn arn:aws:iam::<your-account-id>:role/AmazonEKS_EBS_CSI_DriverRole \
-  --force
-```
+> 📌 **Everything workload-related lives in Git, ArgoCD keeps the cluster synced.**
 
 ---
 
-## 📦 4. Create StorageClass and PVC
+## 📊 How Prometheus & Grafana Are Deployed?
 
-### 🔹 `storageclass.yaml`
+**Prometheus Stack (a.k.a kube-prometheus-stack)**
+
+✅ **Real companies use Helm via:**
+
+* ArgoCD (GitOps preferred)
+* Terraform Helm provider (if not using ArgoCD)
+
+### Example ArgoCD App YAML for Prometheus:
 
 ```yaml
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
+apiVersion: argoproj.io/v1alpha1
+kind: Application
 metadata:
-  name: ebs-sc
-provisioner: ebs.csi.aws.com
-volumeBindingMode: WaitForFirstConsumer
-```
-
-### 🔹 `pvc.yaml`
-
-```yaml
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: nginx-ebs-pvc
+  name: monitoring
+  namespace: argocd
 spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: ebs-sc
-  resources:
-    requests:
-      storage: 1Gi
-```
-
-Apply:
-
-```bash
-kubectl apply -f storageclass.yaml
-kubectl apply -f pvc.yaml
-```
-
----
-
-## 🧱 5. Deploy NGINX Using the EBS Volume
-
-### 🔹 `nginx-deployment.yaml`
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: nginx
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: nginx
-  template:
-    metadata:
-      labels:
-        app: nginx
-    spec:
-      containers:
-      - name: nginx
-        image: nginx
-        ports:
-        - containerPort: 80
-        volumeMounts:
-        - mountPath: "/usr/share/nginx/html"
-          name: ebs-volume
-      volumes:
-      - name: ebs-volume
-        persistentVolumeClaim:
-          claimName: nginx-ebs-pvc
-```
-
-Apply it:
-
-```bash
-kubectl apply -f nginx-deployment.yaml
-kubectl get pods
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 56.0.0
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
 ```
 
 ---
 
-## 🌐 6. Install AWS Load Balancer Controller
+## 🏗️ Typical Workflow
 
-### 1️⃣ Add Helm repo
-
-```bash
-helm repo add eks https://aws.github.io/eks-charts
-helm repo update
-```
-
-### 2️⃣ Associate OIDC Provider
-
-```bash
-eksctl utils associate-iam-oidc-provider \
-  --region ap-south-1 \
-  --cluster devopsshack-cluster \
-  --approve
-```
-
-### 3️⃣ Create IAM role + service account:
-
-```bash
-eksctl create iamserviceaccount \
-  --cluster devopsshack-cluster \
-  --namespace kube-system \
-  --name aws-load-balancer-controller \
-  --attach-policy-arn arn:aws:iam::aws:policy/AWSLoadBalancerControllerIAMPolicy \
-  --approve \
-  --override-existing-serviceaccounts \
-  --region ap-south-1
-```
-
-### 4️⃣ Install with Helm
-
-> 🔁 Replace `<your-vpc-id>` from Terraform output.
-
-```bash
-helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  -n kube-system \
-  --set clusterName=devopsshack-cluster \
-  --set serviceAccount.create=false \
-  --set region=ap-south-1 \
-  --set vpcId=<your-vpc-id> \
-  --set serviceAccount.name=aws-load-balancer-controller
-```
-
-Check:
-
-```bash
-kubectl get pods -n kube-system | grep aws-load
-kubectl get endpoints -n kube-system aws-load-balancer-webhook-service
-```
-
-✅ Ensure pod is **Running** and webhook has **endpoints**.
+| Layer                  | Tool                           | Managed by        | Approach           |
+| ---------------------- | ------------------------------ | ----------------- | ------------------ |
+| Infra (VPC, EKS, IAM)  | Terraform                      | DevOps/Platform   | IaaC               |
+| EKS Cluster Add-ons    | Helm (via Terraform or ArgoCD) | DevOps            | GitOps / Terraform |
+| App Workloads          | ArgoCD                         | Developers / SREs | GitOps             |
+| Monitoring (Prom/Graf) | ArgoCD + Helm                  | DevOps/SRE        | GitOps             |
 
 ---
 
-## 🌍 7. Create NodePort Service + Ingress for NGINX
+## ✅ Summary
 
-### 🔹 `nginx-service.yaml`
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx
-spec:
-  selector:
-    app: nginx
-  ports:
-    - port: 80
-      targetPort: 80
-  type: NodePort
-```
-
-```bash
-kubectl apply -f nginx-service.yaml
-```
+* **Terraform** handles cloud resources, IAM, cluster provisioning.
+* **Helm** installs tools like Prometheus, CSI drivers — either via **Terraform Helm provider** or **ArgoCD**.
+* **ArgoCD** syncs Git-stored manifests for everything from base infra to applications.
+* **Secrets (AWS Secrets Manager)** + CSI driver are mounted using IRSA + Kubernetes secrets.
+* **Monitoring (Prometheus, Grafana)** comes via Helm and GitOps.
 
 ---
 
-### 🔹 `nginx-ingress.yaml`
+Want me to show you:
 
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: nginx-ingress
-  annotations:
-    alb.ingress.kubernetes.io/scheme: internet-facing
-spec:
-  ingressClassName: alb
-  rules:
-    - http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: nginx
-                port:
-                  number: 80
-```
+* Terraform EBS CSI driver IAM role block?
+* A real-world directory structure used in Git for ArgoCD?
 
-```bash
-kubectl apply -f nginx-ingress.yaml
-```
-
-Check:
-
-```bash
-kubectl get ingress
-```
-
-✅ It will return an ALB DNS — open in browser 🚀.
-
----
-
-## 📁 Want All Files in One Repo?
-
-Let me know and I’ll bundle:
-
-* `storageclass.yaml`, `pvc.yaml`
-* `nginx-deployment.yaml`, `nginx-service.yaml`, `nginx-ingress.yaml`
-* Plus optional `alb-controller-install.sh`
-
-Ready to continue? Want a ZIP or GitHub repo layout?
+Let me know — I’ll share that too.
